@@ -1,0 +1,198 @@
+---
+title: "A4_youth_risk_behaviour_survey"
+output: word_document
+---
+# A4_youth_risk_behaviour_survey
+### library packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+```{R}
+options(warn = -1)
+library(dplyr)
+library(xgboost)
+library(tidyverse)
+library(ggplot2)
+library(naniar)
+library(visdat)
+```
+### load data
+
+```{R}
+load("./datasets/yrbs-1.rda")
+nrow(x)
+length(r)
+#ensure that r and x have same length
+```
+
+## Task 1: Build a classifier to predict labels `r` from `x` with xgboost, and show the confusion matrix
+
+### clean data, clean NAs from ethnicity not elsewhere
+
+```{R}
+x.df = data.frame(x)
+xr.df <- x.df %>% mutate(r = r)
+summary(xr.df)
+gg_miss_var(xr.df)
+gg_miss_upset(xr.df)
+as_shadow(xr.df)
+(aq_shadow <- bind_shadow(xr.df))
+```
+
+We find that there are many missing value in the data. 
+
+An acceptable way is to clean NAs form ethnicity (r) and *xgboost* package will deal with the other NA values.  The other NA values are considered as 'missing' by the algorithm of *xgboost*. 
+
+Another way is to use *missRanger* package to replace the NA values but it is not very useful in this case, and it takes so much time to get a result.
+
+```{R}
+xr_new=subset(xr.df,r!="NA")
+
+#library(missRanger)
+#xr_imp <- xr_new %>%
+  #missRanger(verbose = 1, returnOOB = TRUE)
+```
+
+###  Use cross validation to find best value of nrounds (and possibly eta)
+
+```{R}
+#Data setup
+train_test = sample(2,nrow(xr_new),replace = T,prob = c(0.75,0.25))
+xr.train<-xr_new[train_test==1,]
+xr.test<-xr_new[train_test==2,]
+#cross validation, begin from nrounds=30, eta =1
+xgb.cv(data=as.matrix(xr.train[,-(95)]), label=xr.train$r, missing = NA,
+       num_class=8, nrounds=40, nfold=5,eta =1, objective="multi:softmax")
+#A bit of L2 regularisation
+xgb.cv(data=as.matrix(xr.train[,-(95)]),label=xr.train$r, missing = NA,
+       num_class=8, nrounds=30, nfold=5, eta =1, objective="multi:softmax",lambda=1)
+```
+
+
+Add $L_2$ regularisation is not bad.
+It seems to plateau at about 7 rounds. Similar performance after varying the learning rate and penalty.  Let's set the nrounds = 7.
+
+### Fit the full model
+
+```{R}
+model<-xgboost(data=as.matrix(xr.train[,-(95)]),label=xr.train$r,
+               num_class=8, nrounds=7,eta=1,objective="multi:softmax",missing = NA, lamda = 1)
+
+
+```
+
+### Confusion matrix. 
+
+```{R}
+res = table(predict(model,newdata=as.matrix(xr.test[,-(95)]))==xr.test$r)
+res
+accuracy_T=res[2]/(res[1]+res[2])
+accuracy_T
+table(predict(model,newdata=as.matrix(xr.test[,-(95)])),xr.test$r, dnn=c("actual","predict"))
+```
+
+The confusion matrix is not very good. The accuracy is only about 50%.
+
+## Task 2: Describe and visualise which variables are most important in the prediction. 
+
+### Variables importance.
+
+```{R}
+xgb.importance(model=model)
+names <- dimnames(data.matrix(xr.train[,c(1:94)]))[[2]]
+importance_matrix <- xgb.importance(names,model=model) 
+xgb.plot.importance(importance_matrix[1:9,])
+```
+
+q97 is the most important variable, then the q7 and q9. 
+The top six variables' importance seems significant. Let's draw SHAP plot for these 6 variables.
+
+```{R}
+xgb.plot.shap(model=model, data=as.matrix(xr_new[,1:94]),top_n=6,n_col=2)		
+```
+
+Obviously, q97 is the most important variable.
+
+## Task 3: Describe and display the relationships between the most important variables and the label categories.
+
+### visualisation of variation across classes for top 3 variables
+```{R}
+#q97
+
+q97clean <- xr_new %>% subset(q97!="NA"&r!="NA") 
+head(q97clean)
+q97=as.data.frame(cbind(q97clean$q97, q97clean$r)) 
+head(q97)
+colnames(q97) = c("ans", "r")
+plot_97=ggplot(data=q97,mapping=aes(x=factor(ans)))+geom_bar(stat= 'count')+labs(title="Variation of q97\n (Q97 How many times have you had a sunburn?)",x = "q97 ans", y = "Counts") 
+plot_97
+## Warning: Use of `q97$q97_1` is discouraged. Use `q97_1` instead.
+#top2 q9=subset(data,q9!="NA"&r!="NA") q9_1=q9$q9 r_na_9=q9$r q9_trans=cbind(q9_1,r_na_9) q9=as.data.frame(q9_trans)
+
+```
+
+Most of them don't like sunburn much.
+
+```{R}
+q7clean <- xr_new %>% subset(q7!="NA"&r!="NA") 
+q7=as.data.frame(cbind(q7clean$q7, q7clean$r)) 
+colnames(q7) = c("ans", "r")
+plot_7=ggplot(data=q7,mapping=aes(x=factor(ans)))+geom_bar(stat= 'count')+labs(title="Variation of q7 \n(Q7 How much do you weigh without your shoes on? (kilograms.)) ",x = "q7 ans", y = "Counts") 
+plot_7
+
+```
+
+
+```{R}
+q9clean <- xr_new %>% subset(q9!="NA"&r!="NA") 
+q9=as.data.frame(cbind(q9clean$q9, q9clean$r)) 
+colnames(q9) = c("ans", "r")
+plot_9=ggplot(data=q9,mapping=aes(x=factor(ans)), fill = factor(q9[,1]))+geom_bar(stat= 'count')+labs(title="Variation of q9 \n (Q9 How often do you wear a seat belt? \n(level: 1-5 (never - always))", x = "q9 ans", y = "Norm Freq) ",x = "q9 ans", y = "Counts") 
+plot_9
+```
+
+Most of them always wear a seat belt.
+
+```{R}
+r_q97=ggplot(data=q97,aes(x=factor(ans)))+geom_bar(aes(fill=factor(r)),position="dodge")+labs(title="r Vs Q97 (sunburn)", x = "q97 ans") 
+r_q97
+
+r_q7=ggplot(data=q7,aes(x=factor(ans)))+geom_bar(aes(fill=factor(r)),position="dodge")+labs(title="r Vs Q7 (weight)", x = "q7 ans") 
+r_q7
+
+r_q9=ggplot(data=q9,aes(x=factor(ans)))+geom_bar(aes(fill=factor(r)),position="dodge")+labs(title="r Vs Q9 (seatbelt)",x = "q9 ans") 
+r_q9
+
+```
+
+From plots above, we can see race 4 (white) like sunburn most and they seems heavier (greater weight) than other races. 
+And generally speaking, every race wear a seat belt often.
+
+### Inspect all top variables to identify best for discriminating classes or fit model for each class and get top variables. 
+
+```{R results='hide'}
+get_top = function(v){
+  for(i in c(0:7)){
+    train.label_ri = case_when(xr.train$r == i ~ TRUE, xr.train$r !=i ~ FALSE)
+    train.xgbmat <- xgb.DMatrix(data = as.matrix(xr.train[,-(95)]), label = train.label_ri)
+    xgb_races = xgboost(data = train.xgbmat, max_depth=6, eta=1,  objective='binary:logistic', nround=30, lamda = 1)
+    v[i+1] = xgb.importance(model = xgb_races)[1]
+  }
+  return(v)
+}
+v= rep(" ",7)
+topv = get_top(v)
+
+```
+```{r}
+topv
+```
+So for race 0-7, the best discriminating variable is "q7"  "q7"  "q97" "q7"  "q97" "q99" "q7"  "q7", respectively.
+
+## Task 4:  Comment on whether (or not) task 3 would be ethically problematic if intended to be published, and for what reasons.
+
+* First, the accuracy of this model is poor (about 50%). It is not good enough to be published. If we publish it and people believe it, it could be a problem. 
+* Second, the prediction of this model is about race and ethnicity which is one of the most sensitive topic in the world. Many people from different races could feel offended.  
+* Third, even though the model is good, if we get the model published, it will reinforce stereotypes of different race. The personality do exists everywhere, and we should respect it.
+In conclusion, publish this model is not a good idea.

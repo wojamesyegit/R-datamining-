@@ -1,0 +1,304 @@
+---
+title: "A2_predicting_taxi_tips"
+author: "ray_wang"
+date: '2020.05'
+output:
+  html_document:
+    df_print: paged
+---
+
+## Using the data from week 2 of January 2016 (week2.csv), construct a model that predicts the amount of a tip.  Evaluate the mean squared error of this model on the data from week 4 of January 2016 (week4.csv). 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+```
+
+```{r}
+options(warn = -1)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(leaflet)
+library(leaps)
+library(s20x)
+
+```
+
+# data clean
+
+Read the csv data into R.
+
+```{R}
+week2 = read.csv(file= "week2.csv", header = TRUE)
+week4 = read.csv(file= "week4.csv", header = TRUE)
+nrow(week2)
+tail(week2)
+summary(week2)
+```
+
+After reading the description of this taxi data,I find there are some columns that are clearly uninformative. 
+
+I decide to delete extra, mta_tax, improvement_surcharge and because only credit card tips are included, I need to select the data which payment type == 1
+For justification, we can give a command to see there is no tip record in other payment_type.
+
+```{R}
+week2[which(week2$payment_type != 1& week2$Tip_amount != 0 ),]
+```
+
+There are some illegal negative value. Let's do the data clean. 
+
+* Filter rows with illegal values and recode time sensibly. 
+* Recode location to pick up airport trips including leave airport and go to airport.
+* Recode pickup and dropoff location into categories, evening, morning, afternoon, night.
+
+```{R}
+isAirport <- function(x,y){
+  longt <- x;
+  lat <- y;
+  airport_longt = -73.7785;
+  airport_lat =  40.6415;
+  return( abs(x-airport_longt)<=0.035&abs(y-airport_lat)<=0.025)
+}
+taxi <- subset(week2, select = -c(extra, mta_tax, improvement_surcharge))%>%
+  filter(payment_type == '1', tip_amount >= 0, fare_amount >= 0 ,
+         trip_distance >= 0,trip_distance< 2000,tolls_amount>= 0, RatecodeID <= 6)%>%
+  separate(col= tpep_dropoff_datetime, into=c("dropoff_day", "dropoff_time"), sep = c('T') )%>%
+  separate(col= dropoff_time, into=c("dropoff_time", "rest"), sep = 'Z' )%>%
+  unite("dropoff_datetime", dropoff_day, dropoff_time,sep = ' ')%>%
+  separate(col= tpep_pickup_datetime, into=c("pickup_day", "pickup_time"), sep = c('T') )%>%
+  separate(col= pickup_time, into=c("pickup_time", "rest2"), sep = 'Z' )%>%
+  unite("pickup_datetime", pickup_day, pickup_time,sep = ' ')%>%
+  select(-c(rest, rest2,payment_type))%>%
+  mutate(
+    dow = wday(pickup_datetime,label=TRUE,abbr=TRUE, week_start = 1, locale = Sys.setlocale("LC_TIME", "American")),                           
+    hour_trip_start = hour(pickup_datetime),                                   
+    trip_duration = as.numeric(difftime(dropoff_datetime,pickup_datetime,units="mins")),
+    gotoAirport = isAirport(dropoff_longitude,dropoff_latitude),
+    leaveAirport =isAirport(pickup_longitude,pickup_latitude)
+  )
+
+taxi$WhatTime <- with(taxi,  ifelse(hour_trip_start >= 5 & hour_trip_start<=11, "morning",
+                                     ifelse(hour_trip_start>11 & hour_trip_start<=16, "afternoon",
+                                            ifelse(hour_trip_start>16 & hour_trip_start<= 19, "evening","night"))))
+```
+
+## Draw plots
+
+We can draw the barplot fair quickly, but we can't draw the plot which including many points, like qpplot(). 
+
+```{R}
+taxi %>%
+  ggplot(aes(x=factor(hour_trip_start))) + geom_bar()
+taxi %>%
+  ggplot(aes(x=factor(WhatTime))) + geom_bar()
+taxi %>%
+  ggplot(aes(x=factor(dow))) + geom_bar()
+taxi %>% ggplot(aes(trip_duration)) + geom_histogram()
+taxi %>% filter(trip_duration < 120 & trip_duration >0) %>% ggplot(aes(trip_duration)) + geom_histogram()
+
+
+```
+
+I want to see what these trips looks like in the map and draw some point plots.
+But the data is too big for my PC, so I have to take a random subsample from the origin data. 
+
+```{R}
+sm_taxi <- taxi %>% sample_n(1e4)
+min_lat <- 40.577
+max_lat <- 40.918
+min_long <- -74.15
+max_long <- -73.700
+sm_taxi <- sm_taxi %>% filter(pickup_longitude > min_long, pickup_longitude < max_long, pickup_latitude > min_lat, pickup_latitude < max_lat)
+airport_taxi <-sm_taxi%>%filter(leaveAirport == TRUE)
+#draw map in R
+leaflet(sm_taxi) %>% 
+  addTiles() %>% 
+  addCircleMarkers(~pickup_longitude,~pickup_latitude, radius=2,stroke = FALSE, opacity=1, fillOpacity =1)
+leaflet(airport_taxi) %>% 
+  addTiles() %>% 
+  addCircleMarkers(~pickup_longitude,~pickup_latitude, radius=2,stroke = FALSE, opacity=1, fillOpacity =1)
+```
+
+From the map, we find there are some airport trips. 
+We can infer that the airport trip could be a factor in our model. So we mutate two new columns: leaveAirport and gotoAirport.
+
+Draw some plots to to find potential relationships between variables to include eg time of day/week/distance etc.
+
+```{R}
+qplot(trip_distance, tip_amount, col=dow, data = sm_taxi,
+               main="The relation between trip distance and tip amount \n (colors indicate the day of week)")
+ggplot(sm_taxi, aes(trip_distance, tip_amount)) + geom_hex() 
+trendscatter(tip_amount~ trip_distance,main = "The relation between trip_distance and tip amount" ,data = sm_taxi)
+
+
+qplot(fare_amount, tip_amount, data = sm_taxi,
+      main="The relation between fare_amount and tip amount")
+ggplot(sm_taxi, aes(fare_amount, tip_amount)) + geom_hex() 
+trendscatter(tip_amount~ fare_amount,main = "The relation between fare_amount and tip amount" ,data = sm_taxi)
+
+qplot(trip_duration, tip_amount, col=dow, data = sm_taxi,
+      main="The relation between trip duration and tip amount \n (colors indicate the day of week)")
+
+
+qplot(store_and_fwd_flag, tip_amount, data = sm_taxi,
+      main="The relation between store_and_fwd_flag and tip amount ")
+qplot(store_and_fwd_flag, tip_amount,data = sm_taxi, geom= "boxplot" , col = store_and_fwd_flag)+ ggtitle("tip_amount VS store_and_fwd_flag ")
+
+qplot(gotoAirport, tip_amount,data = sm_taxi, geom= "boxplot", col = gotoAirport)+
+ggtitle("tip_amount VS gotoairport")
+
+qplot(leaveAirport, tip_amount,data = sm_taxi, geom= "boxplot", col = leaveAirport)+
+ggtitle("tip_amount VS leaveAirport")
+
+qplot(factor(passenger_count), tip_amount, data = sm_taxi,
+      main="The relation between passenger_count and tip amount \n (colors indicate the day of week)")
+qplot(factor(passenger_count), tip_amount,data = sm_taxi, geom= "boxplot")+
+ggtitle("tip_amount VSpassenger_count")
+
+qplot(dow, tip_amount, data = sm_taxi,geom= "boxplot", col = dow,
+      main="The relation between dow and tip amount ")
+
+qplot(WhatTime, tip_amount, data = sm_taxi, geom= "boxplot", col = WhatTime,
+      main="The relation between Time and tip amount  ")
+
+
+
+
+```
+
+We find trip_distance, fare_amount, and airport trips has big effect on tip_amount.
+The day of week and what time in a day has slight effect on tip_amount.
+
+## Model fit 
+
+Before fit the model, we need clean the train data again and prepare the test data week4. 
+The test data also need to be clean because we must have the same columns as the train data wk2 to ensure the prediction works.
+
+```{R}
+taxi_lm <- taxi %>%filter(trip_duration >=0)%>%
+  select(-c(hour_trip_start, total_amount, dropoff_datetime, dropoff_longitude,
+                          dropoff_latitude, pickup_datetime, pickup_latitude, pickup_longitude, VendorID))%>%
+  mutate(
+    dow = factor(dow),  
+    RatecodeID = factor(RatecodeID),
+    store_and_fwd_flag = factor(store_and_fwd_flag),
+    gotoAirport = factor(gotoAirport),
+    leaveAirport = factor(leaveAirport),
+    WhatTime = factor( WhatTime)
+  )
+summary(taxi_lm)
+
+taxi_test <- subset(week4, select = -c(extra, mta_tax, improvement_surcharge))%>%
+  filter(payment_type == '1')%>%
+  separate(col= tpep_dropoff_datetime, into=c("dropoff_day", "dropoff_time"), sep = c('T') )%>%
+  separate(col= dropoff_time, into=c("dropoff_time", "rest"), sep = 'Z' )%>%
+  unite("dropoff_datetime", dropoff_day, dropoff_time,sep = ' ')%>%
+  separate(col= tpep_pickup_datetime, into=c("pickup_day", "pickup_time"), sep = c('T') )%>%
+  separate(col= pickup_time, into=c("pickup_time", "rest2"), sep = 'Z' )%>%
+  unite("pickup_datetime", pickup_day, pickup_time,sep = ' ')%>%
+  select(-c(rest, rest2,payment_type))%>%
+  mutate(
+    dow = wday(pickup_datetime,label=TRUE,abbr=TRUE, week_start = 1, locale = Sys.setlocale("LC_TIME", "American")),                           
+    hour_trip_start = hour(pickup_datetime),                                   
+    trip_duration = as.numeric(difftime(dropoff_datetime,pickup_datetime,units="mins")),
+    gotoAirport = isAirport(dropoff_longitude,dropoff_latitude),
+    leaveAirport =isAirport(pickup_longitude,pickup_latitude)
+  ) 
+taxi_test$WhatTime <- with(taxi_test,  ifelse(hour_trip_start >= 5 & hour_trip_start<=11, "morning",
+                                              ifelse(hour_trip_start>11 & hour_trip_start<=16, "afternoon",
+                                                                                                          ifelse(hour_trip_start>16 & hour_trip_start<= 19, "evening","night"))))
+
+taxi_test <- taxi_test%>%select(-c(hour_trip_start, total_amount, dropoff_datetime, dropoff_longitude,
+ dropoff_latitude, pickup_datetime, pickup_latitude, pickup_longitude, VendorID))%>%
+  filter(tip_amount >= 0, trip_distance >= 0,trip_distance< 2000,fare_amount >= 0 ,tolls_amount>= 0, trip_duration >=0,RatecodeID <= 6)%>%
+  mutate(
+    dow = factor(dow),  
+    RatecodeID = factor(RatecodeID),
+    store_and_fwd_flag = factor(store_and_fwd_flag),
+    gotoAirport = factor(gotoAirport),
+    leaveAirport = factor(leaveAirport),
+    WhatTime = factor( WhatTime)
+  )
+
+summary(taxi_test)
+
+```
+
+### Calculate the MSPE and do model selection
+
+Then, fit the model. 
+Here I use backwards selection methods to do the model selection. And use R-squared and BIC as the criteria.  
+First we should fit a full model. And we should delete *dow* from our model according to plots above.
+```{R}
+library(car)
+taxi.lm = lm(tip_amount ~ ., data =taxi_lm)
+summary(taxi.lm)
+taxi.pred <- predict(taxi.lm, taxi_test, interval = "prediction", level = 0.95)
+#MSPE
+mean((taxi_test$tip_amount-taxi.pred[,1])^2)
+vif(taxi.lm)
+
+```
+
+
+
+*passenger_count* has poor p value. I decide to delete *passenger_count*.
+
+*fare_amount* and *trip_distance* have multicolinearity. I decide to delete *fare_amount*.
+
+The MSPE of our first model isn't very good.
+
+```{r}
+taxi.lm_2 = lm(tip_amount ~ .-fare_amount-passenger_count-dow, data =taxi_lm)
+summary(taxi.lm_2)
+vif(taxi.lm_2)
+taxi.pred_2 <- predict(taxi.lm_2, taxi_test, interval = "prediction", level = 0.95)
+#MSPE
+mean((taxi_test$tip_amount-taxi.pred_2[,1])^2)
+```
+
+Now, all variables have good p value and the result of VIF check is good.
+But the MSPE is still not good. I need do more model selection. 
+Here I use leaps package to do the following steps.
+
+```{r}
+leaps <- regsubsets(tip_amount ~ .-fare_amount-passenger_count,data =taxi_lm, nbest = 4 )
+reg = summary(leaps)
+reg
+plot(leaps, scale = "adjr2")
+plot(leaps, scale = "bic")
+
+summary(leaps)$which[which.max(reg$bic),]
+summary(leaps)$which[which.max(reg$adjr2),]
+
+```
+
+We pick the model has max adjusted R-squared as the final model.
+That is: 
+
+```{r}
+taxi.lm_final = lm(tip_amount ~ RatecodeID+tolls_amount+trip_distance+leaveAirport + WhatTime, data =taxi_lm)
+summary(taxi.lm_final)
+vif(taxi.lm_final)
+taxi.pred_final <- predict(taxi.lm_final, taxi_test, interval = "prediction", level = 0.95)
+#MSPE
+mean((taxi_test$tip_amount-taxi.pred_final[,1])^2)
+```
+
+The MSPE is about 4.8, which is a little high, that means the error of every trip tip amount is about 2 in week4 data. 
+
+## Interpret model and accuracy
+* The p-value of every variable in the model is good enough. 
+* Generally, variables in the model are sensible. And the number of variables is 5, which is easy to understand and do analysis.
+* The face validity is OK, but not very good. The prediction is plausiable. For example, the 1 unit trip_distance increase, about 0.47 tip amount increase. The 1 unit tolls_amount increase, about 0.22 tip amount increase. Passengers with ratecodeID 6 (group ride) prefer pay about 8.4 more dollars tip. But the airport factors show negative effect on tip amount, which is not very sensible.  
+* The R-squared is 0.5086,which means the model can explain about 51% data in week2 data. 
+
+However, after model selection, the accuracy doesn't improve much. 
+The MSPE is about 4.8, that means the error of every trip tip amount is about 2 in week4 data. 
+
+It is possible that linear model without interaction variable can't fit the data well.
+We can add interaction term into the model and do model selection again. 
+
+
