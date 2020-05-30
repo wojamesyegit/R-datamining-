@@ -1,0 +1,194 @@
+---
+title: "A3_classifying_text_spam"
+output: word_document
+---
+# A3_classifying_text_spam
+
+### library package
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{R}
+options(warn = -1)
+library(rpart)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+```
+## 1. Use rpart to fit and prune (if necessary) a tree predicting spam/non-spam from the common word counts in the wordmatrix matrix.
+### prepare data
+```{r}
+load("./A3_datasets/spam.rda")
+word.df = data.frame(wordmatrix)
+word.df$is_spam = df$is_spam
+word.df$is_spam = factor(word.df$is_spam, levels = c(TRUE, FALSE))
+```
+
+### Get train set and test set
+```{r}
+# Divide training set and test set
+set.seed(0501)
+train_test=sample(2,nrow(word.df),replace = T,prob = c(0.75,0.25))
+word.train<-word.df[train_test==1,]
+word.test<-word.df[train_test==2,]
+```
+
+### Use rpart to fit a tree
+```{r}
+mytree <-rpart(is_spam~.,data = word.train, cp = 1e-4)
+mytree
+#check the complexity parameters
+printcp(mytree)
+plot(mytree,margin = 0.01)
+plotcp(mytree)
+
+```
+
+Our first tree has a long tail, almost all branches in the same direction. 
+The long tail means there exist some key word to classify the spam, such as, "Call", "me".
+
+According to the cp plot, we have the smallest cp in no.22 split. The following splits is not useful. We need do a little pruning.
+### The confusion matrix of first tree.
+```{r}
+predictions_1<-predict(mytree,word.test,type = "class")
+cm_1 = table(word.test$is_spam,predictions_1)
+cm_1
+accuracy_F_1=cm_1[4]/(cm_1[3]+cm_1[4])
+accuracy_T_1=cm_1[1]/(cm_1[1]+cm_1[2])
+accuracy_T_1
+accuracy_F_1
+```
+The FALSE accuracy (specificity) is about 87%.
+The TRUE accuracy (specificity) is about 96%.
+### Pruning
+
+We find the smallest xerror split to do pruning. 
+
+```{r}
+
+mytree.cp<-mytree$cptable[which.min(mytree$cptable[,"xerror"]),"CP"]
+mytree.cp
+prune.tree<-prune(mytree,cp=mytree.cp)
+plot(prune.tree,margin = 0.01)
+#text(prune.tree,all = T,use.n = T)
+
+```
+Because the tree is not complex, the shape of the tree doesn't change much after pruning. 
+
+Then let's use test set to get a confusion matrix to see how accuracy the tree is.
+
+### The confusion matrix of the prune tree.
+```{r}
+pred_prune<-predict(prune.tree,word.test,type = "class")
+cm_prune = table(word.test$is_spam,pred_prune)
+cm_prune
+accuracy_F_prune=cm_prune[4]/(cm_prune[3]+cm_prune[4])
+accuracy_T_prune=cm_prune[1]/(cm_prune[1]+cm_prune[2])
+accuracy_T_prune
+accuracy_F_prune
+```
+
+The FALSE accuracy (specificity) is about 88%, better than the first tree.
+The TRUE accuracy (specificity) is about 97%, better than the first tree.
+So the pruning does improve the first tree, but not much. 
+
+ 
+## 2. A 'Naïve Bayes' classifier
+```{r}
+y_i <- word.df %>% filter(is_spam == "TRUE") %>% select(-is_spam) %>% colSums() 
+n_i <- word.df %>% filter(is_spam == "FALSE") %>% select(-is_spam) %>%colSums()
+e_i  = log(y_i+1) - log(n_i+1)
+nb <- t(t(wordmatrix) * e_i) %>% rowSums()
+summary(nb)
+```
+
+The greater the ei of one text, the more words appear in spam, and the smaller the ei, the more words appear in non-spam.
+
+```{r,fig.width=8, fig.height=4}
+
+word.df$ei = nb
+qplot(is_spam, ei,data = word.df, geom= "boxplot", col = is_spam) + 
+  ggtitle("The relation between e_i and spam/non-spam")
+
+```
+ It seems spam has higher $e_i$ than non-spam.
+ 
+### Construct a naïve Bayes classifier and choose the threshold so the proportion of spam predicted is the same as the proportion observed. 
+
+First we use ROC curve to get a initial threshold value.
+
+```{R}
+library(pROC)
+roc<-roc(word.df$is_spam,word.df$ei )
+plot(roc,print.auc=T,auc.polygon=T,max.auc.polygon=T,auc.polygon.col="yellow",print.thres=T)
+th =  -11.108
+```
+
+The initial threshold = -11.108. The threshold need to smaller than 0. 
+Use this initial threshold range to find the threshold so the proportion of spam predicted is the same as the proportion observed.
+
+```{R}
+
+a = summary(word.df$is_spam)
+a
+p_actual = a[1]/(a[2]+a[1])
+p_actual
+pred=rep(0,nrow(word.df))
+all_th = seq(th,0, 0.1)
+pp = rep(0,length(all_th))
+for (t in all_th) {
+  for (k in c(1:nrow(word.df))) {
+  if (word.df$ei[k] >= t) {
+    pred[k] = "TRUE"
+  }else{
+    pred[k] = "FALSE"
+  }
+  
+  }
+  b = table(pred)
+  p_pred = b[2]/(b[2]+b[1])
+  pp[which(all_th==t)] = p_pred
+}
+th.df = cbind(data.frame(all_th),data.frame(pp))
+head(th.df)
+pplot = ggplot() +geom_line(aes(x=all_th,y=pp))+ ggtitle("Propotion (TRUE) in different thresholds")
+
+pplot + geom_hline(aes(yintercept=p_actual), col = "red") + geom_vline(aes(xintercept= all_th[which.min(abs(pp- p_actual))]), col = "red")
+
+
+my_threshold =  all_th[which.min(abs(pp- p_actual))]
+my_threshold
+
+```
+
+
+The required threshold = -6.608, that means if $e_i$ of a text greater than -6.608, the text is a spam.
+
+### confusion matrix
+```{r}
+cm_e = table(word.df$is_spam,factor(word.df$ei >= my_threshold, levels = c(TRUE, FALSE)))
+cm_e
+accuracy_F_e=cm_e[4]/(cm_e[3]+cm_e[4])
+accuracy_T_e=cm_e[1]/(cm_e[1]+cm_e[2])
+accuracy_T_e
+accuracy_F_e
+
+```
+The FALSE accuracy (specificity) is about 93.1%, good.
+The TRUE accuracy (specificity) is about 55%, bad. 
+Though we have found the threshold that make the proportion of spam predicted is the same as the proportion observed, the accuracy of this cutoff is not good. 
+
+## 3.Why is spam/non-spam accuracy likely to be higher with this dataset than in real life? What can you say about the generalisability of the classifier to particular populations of text users?
+From the UCI website:
+A subset of 3,375 SMS randomly chosen ham messages of the NUS SMS Corpus (NSC), which is a dataset of about 10,000 legitimate messages collected for research at the Department of Computer Science at the National University of Singapore. The messages largely originate from Singaporeans and mostly from students attending the University.
+
+A collection of 425 SMS spam messages was manually extracted from the Grumbletext Web site. This is a UK forum in which cell phone users make public claims about SMS spam messages, most of them without reporting the very spam message received. 
+
+A list of 450 SMS ham messages collected from Caroline Tag's PhD 
+Finally, we have incorporated the SMS Spam Corpus v.0.1 Big. It has 1,002 SMS ham messages and 322 spam messages
+
+According to the website, most data is from Singapore, it is mainly written in Singaporean English. Only a small part of data set is from UK in native English. 
+If we English words to construct our classifier, it make sense that the spam/non-spam accuracy likely to be higher with this data set than in real life. Because in real life, not everyone use English like Singaporean do.
+The classifier is good for Singaporean but not good for other English users.
+So I don't think the generalisability of the classifier is good. 

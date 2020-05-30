@@ -1,0 +1,207 @@
+---
+title: "A1_cyclists_and_rain_in_Auckand"
+author: "ray_wang"
+date: "2020.05.18"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.height=3)
+```
+
+#Use data on the number of people counted cycling in Auckland, and the amount of rain to answer the following qUestions. 
+
+##1. If you try to convert the cycle count data to tidy format (which you don't have to do for this assignment, because it's hard), what is one obstacle you will encounter?
+
+First, I read the data into R.
+
+```{r}
+#import packages
+options(warn = -1)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(s20x)
+#read the data into R
+cycle2016.df = read.csv(file= "dailyakldcyclecountdata2016_updated.csv", header = TRUE)
+cycle2017.df = read.csv(file = "dailyakldcyclecountdata2017_1.csv", header = TRUE)
+cycle2018.df = read.csv(file = "dailyakldcyclecountdata2018.csv", header = TRUE)
+#we can see the brief information about these three dataframes
+#head(cycle2018.df)
+#head(cycle2017.df)
+#head(cycle2016.df)
+ncol(cycle2018.df)
+ncol(cycle2017.df)
+ncol(cycle2016.df)
+
+rain2018.df = read.table(file = "rain2018.txt", header = TRUE, sep = ",")
+rain16.17.df = read.table(file = "rain2016-17.txt", header = TRUE, sep = ",")
+ncol(rain2018.df)
+ncol(rain16.17.df)
+
+```
+
+I find the columns of cyclist data are different in 2016,2017,2018.  
+So I can't bind these three years data into one directly. 
+There are differnt names for same counters in these threee years data.
+If I try to convert the cycle count data to tidy format, the obstacle is the difficulty in counter names change.
+
+##2. Compute the total number of cyclists counted for each day, and a suitable summary of the rainfall for each day, in the same data frame.
+Before I start to manipulate the data, I must transform the NA into 0.  
+
+
+```{r}
+cycle2018.df[is.na(cycle2018.df)]<-0
+cycle2017.df[is.na(cycle2017.df)]<-0
+cycle2016.df[is.na(cycle2016.df)]<-0
+cycle2018.df$Total.number.Cyclists <- rowSums(cycle2018.df[,2:ncol(cycle2018.df)])
+cycle2017.df$Total.number.Cyclists <- rowSums(cycle2017.df[,2:ncol(cycle2017.df)])
+cycle2016.df$Total.number.Cyclists <- rowSums(cycle2016.df[,2:ncol(cycle2016.df)])
+```
+
+Then get the sum of cyclists each day.
+```{r}
+cycle2018.df$Total.number.Cyclists <- rowSums(cycle2018.df[,2:ncol(cycle2018.df)])
+cycle2017.df$Total.number.Cyclists <- rowSums(cycle2017.df[,2:ncol(cycle2017.df)])
+cycle2016.df$Total.number.Cyclists <- rowSums(cycle2016.df[,2:ncol(cycle2016.df)])
+```
+
+It is necessary to tidy the data. 
+We need seprate the date into four variables: day of week, day of month, month and year.
+And it helps to have numeric values stored as numeric values rather than as strings.We can mutate them.
+We pick the useful columns from the data which includes the date and the sum of cyclist each day.
+After we get three years data tidy, we can bind them together.
+
+``` {r}
+cycle_18 <-cycle2018.df %>%
+  separate(col=Date, into=c("dow", "day", "month", "year")) %>%
+  mutate(dayno=as.numeric(day), yearno=as.numeric(year),
+         wday=factor(dow,levels=c("Mon","Tue","Wed","Thu","Fri","Sat","Sun")))
+#tail(cycle_18)
+#there is a 2019.0101 data which is useless in this assignment, we should delete this row. 
+cycle_18 = cycle_18[-366,]
+#pick the useful columns from the data which includes the date and the sum of cyclist each day.
+cycle_18 = cycle_18[,-c(5:(ncol(cycle_18)-4))]
+#tail(cycle_18)
+
+#the procedure is same as above
+cycle_17 <-cycle2017.df %>%
+  separate(col=Date, into=c("dow", "day", "month", "year")) %>%
+  mutate(dayno=as.numeric(day), yearno=as.numeric(year),
+         wday=factor(dow,levels=c("Mon","Tue","Wed","Thu","Fri","Sat","Sun")))
+cycle_17 = cycle_17[,-c(5:(ncol(cycle_17)-4))]
+#tail(cycle_17)
+
+#the procedure is same as above
+cycle_16 <-cycle2016.df %>%
+  separate(col=Date, into=c("dow", "day", "month", "year")) %>%
+  mutate(dayno=as.numeric(day), yearno=as.numeric(year),
+         wday=factor(dow,levels=c("Mon","Tue","Wed","Thu","Fri","Sat","Sun")))
+cycle_16 = cycle_16[,-c(5:(ncol(cycle_16)-4))]
+#tail(cycle_16)
+
+cycle = rbind(cycle_16,cycle_17,cycle_18)
+summary(cycle)
+head(cycle)
+tail(cycle)
+
+```
+
+Then tidy the rain data. Aggregate the rain amount each hour to get the rain amount each day.
+Similarly, we We need seprate the date into three variables: day of month, month and year.
+And it helps to have numeric values stored as numeric values rather than as strings.We can mutate them.
+After we get the rain data tidy, we can bind the rain data andy cyclist data together.
+```{r}
+#head(rain2018.df)
+#head(rain16.17.df)
+summary(rain2018.df)
+summary(rain16.17.df)
+rain_tmp = rbind(rain16.17.df, rain2018.df)
+# Aggregate the hours rain amount to get the rain amount each day.
+rain_sum<-aggregate(Amount.mm. ~  Date.NZST.,data=rain_tmp,sum)
+
+#tidy the rain data 
+rain <- rain_sum %>%
+  select(Date=Date.NZST., Rainfall=Amount.mm.) %>%
+  separate(Date, into=c("year","month","day"),sep=c(4,6)) %>%
+  mutate(dayno=as.numeric(day))
+  
+#there is a 2019.0101 data which is useless in this assignment, we should delete this row. 
+rain = rain[-1097,]
+tail(rain)
+Rainfall =  rain$Rainfall
+monthno = rain$month
+#confirm that the number of rows is equal in these two dataframe 
+nrow(rain)
+nrow(cycle)
+#After we get the rain data tidy, we can bind the rain data andy cyclist data together.
+cycle_rain <- cbind(cycle , Rainfall, monthno)%>%
+  mutate(monthno =as.numeric(monthno))%>%
+  #transfrom month to season
+  mutate(season = quarter(monthno))
+
+
+```
+
+We achieve the goal: compute the total number of cyclists counted for each day, and a suitable summary of the rainfall for each day, in the same data frame.
+```{r}
+summary(cycle_rain)
+head(cycle_rain)
+```
+
+
+##3. Draw suitable graphs to display how the number of cyclists varies over time, over season, over day of the week, and with rain
+
+Use qpplot() to see the trend over time, over day of the week, over season and with rain. 
+```{r}
+ggplot(cycle_rain, aes(Rainfall,Total.number.Cyclists)) + geom_point()
+qplot(Rainfall, Total.number.Cyclists,data=cycle_rain, col=wday, 
+      main="The relation between Rainfall and the number of cyclists\n (colors indicate the day of week)")
+trendscatter(Total.number.Cyclists ~ Rainfall,main = "The relation between Rainfall and the number of cyclists" ,data=cycle_rain)
+qplot(wday,Total.number.Cyclists,data=cycle_rain, col=wday, geom= "boxplot",
+      main="The relation between the day of week and the number of cyclists\n (colors indicate Rainfall)")
+qplot(month,Total.number.Cyclists,data=cycle_rain, col=month, geom= "boxplot",
+      main="The relation between month and the number of cyclists\n (colors indicate Rainfall)")
+qplot(factor(season),Total.number.Cyclists,data=cycle_rain, col=season, geom= "boxplot",
+      main="The relation between season and the number of cyclists \n(colors indicate Rainfall)")
+qplot(year,Total.number.Cyclists,data=cycle_rain, col=Rainfall, geom= "boxplot", 
+      main="The relation between year and the number of cyclists\n (colors indicate Rainfall)")
+
+```
+
+It is obvious that the number of cyclists decrease when the rain amount increase.
+And people like go to cycle at Tuesday most while they don't like go to cycle at Saturday.
+What's more, people like go to cycle in December most while they don't like go to cycle in April, July and June.
+In other words, they perfer go to cycle in season 4 (month 10-12) while don't like go to cycle in season 3 (7-9) and season 2 (3-6).
+In long term, the number of cyclists increase from 2016 to 2018. 
+
+##4. Fit a regression model to predict the number of cyclists from year, season, day of the week, and rain.
+
+Finally, we can fit a model to predict the number of cyclists from year, season, day of the week, and rain.
+Accroding to the anaylsis of graphs above, I choose total numberof cyclists each day as the dependent variable and the amount of rain, the day of weeks and season as independent variables.
+By the way, the variable month is useful too, but it has the similar impact as the variable season, so I didn't choose month as one of independent variables.
+
+```{r}
+model <- cycle_rain %>%
+  lm(Total.number.Cyclists~Rainfall + factor(year) + factor(wday)+factor(season),data=.)
+coef(summary(model))
+summary(model)
+```
+
+Almost very variables' p-value is good which means variables in this model are significant. 
+The model is acceptable.
+The model support the analysis of graphs above that the number of cyclists decrease when the rain amount increase and people prefer go to cycle at Tuesday and in season 4 most while they don't like go to cycle at Saturday, Sunday and in season 3 and season 2.
+
+##5. Based on your graphs and model, does rain have a big impact on the number of people cycling in Auckland?
+
+Yes, I think rain have a big impact on the number of people cycling in Auckland.
+First, the p-value of the variable 'Rainfall' is very close to zero which proves its significance.
+What's more, the cofficient of variable 'Rainfall' is -229.6 which means the number of cyclists decrease about 230 when the rain amount increase 1 mm in Auckland.
+In summary,  rain have a big impact on the number of people cycling in Auckland.
+
+
+
